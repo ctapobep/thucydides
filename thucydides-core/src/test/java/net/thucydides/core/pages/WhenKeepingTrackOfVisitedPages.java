@@ -21,10 +21,7 @@ import org.openqa.selenium.firefox.FirefoxDriver;
 import java.net.URL;
 
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.not;
-import static org.hamcrest.Matchers.nullValue;
+import static org.hamcrest.Matchers.*;
 import static org.mockito.Matchers.any;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.never;
@@ -35,7 +32,7 @@ public class WhenKeepingTrackOfVisitedPages {
 
     @Mock
     WebDriver driver;
-    
+
     @Mock
     WebDriverFacade driverProxy;
 
@@ -45,7 +42,7 @@ public class WhenKeepingTrackOfVisitedPages {
     MockEnvironmentVariables environmentVariables;
 
     Configuration configuration;
-    
+
     @Before
     public void initMocksAndClearSystemwideDefaultUrl() {
         MockitoAnnotations.initMocks(this);
@@ -113,18 +110,18 @@ public class WhenKeepingTrackOfVisitedPages {
         when(driver.getCurrentUrl()).thenReturn("http://www.apache.org");
         final Pages pages = new Pages(driver, configuration);
 
-        assertThat(pages.get(ApacheHomePage.class).getClass().getName(),
-                    is(ApacheHomePage.class.getName()));
+        assertThat(Pages.getRealClass(pages.get(ApacheHomePage.class)).getName(),
+                    equalTo(ApacheHomePage.class.getName()));
     }
 
     @Test
-    public void the_getAt_method_is_Groovy_shorthand_for_currentPageAt() {
+    public void the_getAt_method_is_Groovy_shorthand_for_getPage() {
 
         when(driver.getCurrentUrl()).thenReturn("http://www.apache.org");
         final Pages pages = new Pages(driver, configuration);
 
-        assertThat(pages.getAt(ApacheHomePage.class).getClass().getName(),
-                    is(ApacheHomePage.class.getName()));
+        assertThat(Pages.getRealClass(pages.getAt(ApacheHomePage.class)).getName(),
+                equalTo(Pages.getRealClass(pages.getPage(ApacheHomePage.class)).getName()));
     }
 
     @Test
@@ -192,14 +189,14 @@ public class WhenKeepingTrackOfVisitedPages {
         pages.currentPageAt(PageObjectWithNoDriverConstructor.class);
     }
 
-    static final class GooglePage extends PageObject {
+    static class GooglePage extends PageObject {
 
         public GooglePage(final WebDriver driver) {
             super(driver);
         }
     }
 
-    static final class SomeOtherPage extends PageObject {
+    static class SomeOtherPage extends PageObject {
 
         public SomeOtherPage(final WebDriver driver) {
             super(driver);

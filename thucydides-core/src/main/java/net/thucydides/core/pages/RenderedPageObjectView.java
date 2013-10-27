@@ -27,7 +27,7 @@ import static com.google.common.collect.Lists.reverse;
 /**
  * A page view that handles checking and waiting for element visibility.
  */
-class RenderedPageObjectView {
+public class RenderedPageObjectView {
 
     private final transient WebDriver driver;
     private transient long waitForTimeoutInMilliseconds;

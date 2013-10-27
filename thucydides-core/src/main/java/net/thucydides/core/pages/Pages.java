@@ -1,10 +1,11 @@
 package net.thucydides.core.pages;
 
 import com.google.common.base.Optional;
+import net.sf.cglib.proxy.Enhancer;
+import net.sf.cglib.proxy.MethodInterceptor;
 import net.thucydides.core.annotations.Fields;
 import net.thucydides.core.guice.Injectors;
-import net.thucydides.core.reflection.FieldFinder;
-import net.thucydides.core.reflection.FieldSetter;
+import net.thucydides.core.steps.StepInterceptor;
 import net.thucydides.core.webdriver.Configuration;
 import net.thucydides.core.webdriver.WebDriverFacade;
 import net.thucydides.core.webdriver.WebdriverProxyFactory;
@@ -15,10 +16,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.Serializable;
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Modifier;
 
 import static org.apache.commons.lang3.StringUtils.isNotEmpty;
 
@@ -33,17 +31,12 @@ public class Pages implements Serializable {
 
     private static final long serialVersionUID = 1L;
     private static final String NO_VALID_CONSTRUCTOR_FOUND = "This page object does not appear have an empty constructor or a constructor that takes a WebDriver parameter";
-
-    private transient WebDriver driver;
-
     private static final Logger LOGGER = LoggerFactory.getLogger(Pages.class);
-
-    private String defaultBaseUrl;
-
     private final Configuration configuration;
-
+    PageObject currentPage = null;
+    private transient WebDriver driver;
+    private String defaultBaseUrl;
     private WebdriverProxyFactory proxyFactory;
-
     private transient boolean usePreviousPage = false;
 
     public Pages(Configuration configuration) {
@@ -65,12 +58,12 @@ public class Pages implements Serializable {
         this.driver = driver;
     }
 
-    public void setDriver(final WebDriver driver) {
-        this.driver = driver;
-    }
-
     public WebDriver getDriver() {
         return driver;
+    }
+
+    public void setDriver(final WebDriver driver) {
+        this.driver = driver;
     }
 
     protected WebdriverProxyFactory getProxyFactory() {
@@ -80,8 +73,6 @@ public class Pages implements Serializable {
     public Configuration getConfiguration() {
         return configuration;
     }
-
-    PageObject currentPage = null;
 
     public <T extends PageObject> T getAt(final Class<T> pageObjectClass) {
         return getPage(pageObjectClass);
@@ -94,7 +85,7 @@ public class Pages implements Serializable {
     }
 
     @SuppressWarnings("unchecked")
-	public <T extends PageObject> T get(final Class<T> pageObjectClass) {
+    public <T extends PageObject> T get(final Class<T> pageObjectClass) {
         T nextPage;
         if (shouldUsePreviousPage(pageObjectClass)) {
             nextPage = (T) currentPage;
@@ -126,13 +117,12 @@ public class Pages implements Serializable {
         return nextPage;
     }
 
-    private <T extends PageObject> void  openBrowserIfRequiredFor(T pageCandidate) {
+    private <T extends PageObject> void openBrowserIfRequiredFor(T pageCandidate) {
         if (browserNotOpen()) {
             openHeadlessDriverIfNotOpen();
             pageCandidate.open();
         }
     }
-
 
     private void openHeadlessDriverIfNotOpen() {
         if (browserIsHeadless()) {
@@ -155,6 +145,7 @@ public class Pages implements Serializable {
             return (getDriver() instanceof HtmlUnitDriver);
         }
     }
+
     private <T extends PageObject> void checkUrlPatterns(Class<T> pageObjectClass, T pageCandidate) {
         if (!pageCandidate.matchesAnyUrl()) {
             String currentUrl = getDriver().getCurrentUrl();
@@ -177,7 +168,20 @@ public class Pages implements Serializable {
     }
 
     private <T extends PageObject> boolean currentPageIsSameTypeAs(Class<T> pageObjectClass) {
-        return (currentPage != null) && (currentPage.getClass().equals(pageObjectClass));
+        return currentPage != null && getRealClass(currentPage).equals(pageObjectClass);
+    }
+
+    /**
+     * Returns a real class if the specified object is a CGLIB proxy.
+     *
+     * @param mightBeEnhancedByCglib an object that might be a proxy
+     * @return the actual class of the specified object or a real class if the specified object is a CGLIB proxy
+     */
+    static Class<?> getRealClass(Object mightBeEnhancedByCglib) {
+        if (mightBeEnhancedByCglib.getClass().getName().contains("EnhancerByCGLIB")) {
+            return mightBeEnhancedByCglib.getClass().getSuperclass();
+        }
+        return mightBeEnhancedByCglib.getClass();
     }
 
     public boolean isCurrentPageAt(final Class<? extends PageObject> pageObjectClass) {
@@ -189,7 +193,6 @@ public class Pages implements Serializable {
             return false;
         }
     }
-
 
     /**
      * Create a new Page Object of the given type.
@@ -203,51 +206,31 @@ public class Pages implements Serializable {
     private <T extends PageObject> T getCurrentPageOfType(final Class<T> pageObjectClass) {
         T currentPage = null;
         try {
-            currentPage = createFromSimpleConstructor(pageObjectClass);
-            if (currentPage == null) {
-                currentPage = createFromConstructorWithWebdriver(pageObjectClass);
-            }
+            currentPage = createProxyPage(pageObjectClass, new StepInterceptor(pageObjectClass));
             if (hasPageFactoryProperty(currentPage)) {
                 setPageFactory(currentPage);
             }
-
-        } catch (NoSuchMethodException e) {
-            LOGGER.info("This page object does not appear have a constructor that takes a WebDriver parameter: {} ({})",
-                    pageObjectClass, e.getMessage());
-            thisPageObjectLooksDodgy(pageObjectClass, "This page object does not appear have a constructor that takes a WebDriver parameter");
-        } catch (InvocationTargetException e) {
-        	// Unwrap the underlying exception
-            LOGGER.info("Failed to instantiate page of type {} ({})", pageObjectClass, e.getTargetException());
-            thisPageObjectLooksDodgy(pageObjectClass,"Failed to instantiate page (" + e.getTargetException() +")");
-        }catch (Exception e) {
-        	//shouldn't even get here
+        } catch (Exception e) {
+            //shouldn't even get here
             LOGGER.info("Failed to instantiate page of type {} ({})", pageObjectClass, e);
-            thisPageObjectLooksDodgy(pageObjectClass,"Failed to instantiate page (" + e +")");
+            thisPageObjectLooksDodgy(pageObjectClass, "Failed to instantiate page (" + e + ")");
         }
         return currentPage;
     }
 
-    private <T extends PageObject> T createFromSimpleConstructor(Class<T> pageObjectClass)
-            throws IllegalAccessException, InvocationTargetException, InstantiationException, NoSuchFieldException {
-        T newPage = null;
+    private <T extends PageObject> T createProxyPage(Class<T> page, MethodInterceptor interceptor) {
+        Enhancer e = new Enhancer();
+        e.setSuperclass(page);
+        e.setCallback(interceptor);
+        Class[] constructorArgs = {WebDriver.class};
         try {
-            Class[] constructorArgs = new Class[0];
-            Constructor<? extends PageObject> constructor = pageObjectClass.getConstructor(constructorArgs);
-            newPage = (T) constructor.newInstance();
-            newPage.setDriver(driver);
-
-        } catch (NoSuchMethodException e) {
-            // Try a different constructor
+            page.getConstructor(constructorArgs);//will throw if no such constructor found
+            return (T) e.create(constructorArgs, new Object[]{driver});
+        } catch (NoSuchMethodException e1) {
+            T t = (T) e.create();
+            t.setDriver(driver);
+            return t;
         }
-        return newPage;
-    }
-
-    private <T extends PageObject> T createFromConstructorWithWebdriver(Class<T> pageObjectClass)
-            throws NoSuchMethodException, IllegalAccessException, InvocationTargetException, InstantiationException {
-        Class[] constructorArgs = new Class[1];
-        constructorArgs[0] = WebDriver.class;
-        Constructor<? extends PageObject> constructor = pageObjectClass.getConstructor(constructorArgs);
-        return (T) constructor.newInstance(driver);
     }
 
     private boolean hasPageFactoryProperty(Object pageObject) {
@@ -262,7 +245,6 @@ public class Pages implements Serializable {
             pagesField.get().set(pageObject, this);
         }
     }
-
 
     private void thisPageObjectLooksDodgy(final Class<? extends PageObject> pageObjectClass, String message) {
 
